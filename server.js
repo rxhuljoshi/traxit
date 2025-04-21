@@ -28,7 +28,7 @@ app.use(cors({
     credentials: true
 }));
 app.use(express.json());
-app.use(express.static(__dirname));  // Serve files from the current directory
+app.use(express.static(path.join(__dirname)));  // Serve files from the current directory
 
 // Temporary storage for downloaded files
 // Using /tmp for Vercel compatibility
@@ -36,6 +36,17 @@ const TEMP_DIR = process.env.NODE_ENV === 'production' ? '/tmp' : path.join(__di
 if (!fs.existsSync(TEMP_DIR)) {
     fs.mkdirSync(TEMP_DIR);
 }
+
+// Add route handlers for the specific static files
+app.get('/styles.css', (req, res) => {
+    res.setHeader('Content-Type', 'text/css');
+    res.sendFile(path.join(__dirname, 'styles.css'));
+});
+
+app.get('/script.js', (req, res) => {
+    res.setHeader('Content-Type', 'application/javascript');
+    res.sendFile(path.join(__dirname, 'script.js'));
+});
 
 // Add a route handler for the root path
 app.get('/', (req, res) => {
