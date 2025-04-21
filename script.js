@@ -28,10 +28,16 @@ document.addEventListener('DOMContentLoaded', () => {
     const isProduction = window.location.hostname !== 'localhost' && !window.location.hostname.includes('127.0.0.1');
     let API_BASE_URL = isProduction ? '/api' : 'http://localhost:7777/api';
     
+    // Railway API for audio downloads
+    const RAILWAY_API = isProduction 
+        ? 'https://traxit-production.up.railway.app/download' 
+        : 'http://localhost:3000/download';
+    
     // Debug API URL
     console.log('Environment:', isProduction ? 'Production' : 'Development');
     console.log('Hostname:', window.location.hostname);
     console.log('Using API base URL:', API_BASE_URL);
+    console.log('Using Railway API for downloads:', RAILWAY_API);
 
     // Clipboard functionality
     clipboardBtn.addEventListener('click', async () => {
@@ -68,22 +74,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Function to get proper URL object with params for audio download
     function getAudioDownloadUrl(videoInfo) {
-        // For production, make sure we have a proper absolute URL
-        let baseUrl;
-        if (isProduction) {
-            // Use the current origin (protocol + hostname)
-            baseUrl = `${window.location.origin}${API_BASE_URL}/download/audio`;
-        } else {
-            baseUrl = `${API_BASE_URL}/download/audio`;
-        }
-        
         try {
-            // Create a URL object for audio downloads
-            const apiUrl = new URL(baseUrl);
+            // Use Railway API for downloads (handles YouTube better than Vercel)
+            const apiUrl = new URL(RAILWAY_API);
             
             // Add parameters
             apiUrl.searchParams.append('url', videoInfo.url);
-            apiUrl.searchParams.append('platform', videoInfo.platform);
             apiUrl.searchParams.append('title', videoInfo.title || 'audio');
             
             // Log the URL for debugging
@@ -212,6 +208,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     showNotification(`This feature is coming soon! We're still working on audio downloads for this platform.`, 'warning');
                 } else if (error.message.includes('503') || error.message.includes('temporarily unavailable')) {
                     showNotification(`YouTube Shorts downloads are temporarily unavailable due to YouTube API changes. Please try a regular YouTube video instead.`, 'warning');
+                } else if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
+                    showNotification(`Could not connect to download server. The Railway server might be starting up or sleeping. Try again in a few seconds.`, 'warning');
                 } else {
                     showNotification(`Download error: ${error.message}. Please try again later.`, 'error');
                 }
