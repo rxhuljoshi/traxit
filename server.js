@@ -17,13 +17,19 @@ const os = require('os');
 const { spawn } = require('child_process');
 const ffmpegPath = require('@ffmpeg-installer/ffmpeg').path;
 
+// For debugging in production
+const isProduction = process.env.NODE_ENV === 'production';
+console.log(`Running in ${isProduction ? 'production' : 'development'} environment`);
+console.log(`NODE_ENV: ${process.env.NODE_ENV}`);
+console.log(`Using FFmpeg path: ${ffmpegPath}`);
+
 // Create Express app
 const app = express();
 const PORT = process.env.PORT || 7777;
 
 // Middleware
 app.use(cors({
-    origin: ['http://localhost:5500', 'http://127.0.0.1:5500', process.env.FRONTEND_URL, 'https://reel-2c4k5kyzy-rjdeep0301-gmailcoms-projects.vercel.app'].filter(Boolean),
+    origin: ['http://localhost:5500', 'http://127.0.0.1:5500', process.env.FRONTEND_URL, 'https://reel-2c4k5kyzy-rjdeep0301-gmailcoms-projects.vercel.app', 'https://traxit-1r3oh4fxx-rjdeep0301-gmailcoms-projects.vercel.app'].filter(Boolean),
     methods: ['GET', 'POST'],
     credentials: true
 }));
@@ -35,6 +41,17 @@ app.use(express.static(path.join(__dirname)));  // Serve files from the current 
 const TEMP_DIR = process.env.NODE_ENV === 'production' ? '/tmp' : path.join(__dirname, 'temp');
 if (!fs.existsSync(TEMP_DIR)) {
     fs.mkdirSync(TEMP_DIR);
+}
+
+// Log temp directory status
+try {
+    fs.accessSync(TEMP_DIR, fs.constants.W_OK);
+    console.log(`Temp directory ${TEMP_DIR} is writable`);
+    // List files in temp dir
+    const tempFiles = fs.readdirSync(TEMP_DIR);
+    console.log(`Files in temp directory: ${tempFiles.length}`);
+} catch (err) {
+    console.error(`Temp directory ${TEMP_DIR} is not writable:`, err);
 }
 
 // Add route handlers for the specific static files
@@ -51,6 +68,15 @@ app.get('/script.js', (req, res) => {
 // Add a route handler for the root path
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'index.html'));
+});
+
+// Add a status/health check endpoint
+app.get('/api/status', (req, res) => {
+    res.json({
+        status: 'ok',
+        environment: process.env.NODE_ENV || 'development',
+        timestamp: new Date().toISOString()
+    });
 });
 
 /**
@@ -141,6 +167,49 @@ app.get('/api/download/audio', async (req, res) => {
             }
         }
         
+        // Check if in simplified mode for Vercel
+        if (isProduction) {
+            try {
+                // On Vercel, use a simpler approach that's more likely to work
+                console.log('Using simplified audio download for Vercel environment');
+                
+                // Extract video ID 
+                let videoId;
+                if (url.includes('watch?v=')) {
+                    videoId = url.split('watch?v=')[1].split('&')[0];
+                } else if (url.includes('youtu.be/')) {
+                    videoId = url.split('youtu.be/')[1].split('?')[0];
+                } else if (url.includes('/shorts/')) {
+                    videoId = url.split('/shorts/')[1]?.split('?')[0];
+                } else {
+                    throw new Error('Could not extract video ID from URL');
+                }
+                
+                // Sanitize the title for filename use
+                const safeTitle = sanitizeFilename(title || 'audio');
+                const fileName = `${safeTitle}.mp3`;
+                
+                // Create a header-safe filename version for Content-Disposition
+                const headerSafeFilename = sanitizeFilenameForHeader(title || 'audio');
+                const headerSafeFileName = `${headerSafeFilename}.mp3`;
+                
+                // Redirect to a YouTube to MP3 converter service
+                return res.status(501).json({
+                    error: 'Direct download from Vercel is temporarily disabled',
+                    message: 'Due to server limitations on Vercel, direct downloads are temporarily disabled. Please use a desktop version of our app or try again later.',
+                    videoId: videoId,
+                    url: url
+                });
+            } catch (error) {
+                console.error('Error in simplified download:', error);
+                return res.status(500).json({ 
+                    error: 'Failed to process download in Vercel environment',
+                    message: 'Try using a different YouTube video or check back later'
+                });
+            }
+        }
+        
+        // Regular download process continues here for non-Vercel environment
         // Attempt to decode URL if it's encoded
         try {
             url = decodeURIComponent(url);
@@ -608,87 +677,78 @@ async function extractYouTubeInfo(url) {
             }
         }
         
-        // First try with ytdl-core
+        console.log('Using simplified extraction for Vercel compatibility');
+        
         try {
-            console.log('Trying to get video info with ytdl-core...');
+            // Try extracting with youtube-dl-exec with simpler flags
+            const result = await youtubeDl(url, {
+                dumpSingleJson: true,
+                noWarnings: true,
+                noCheckCertificates: true,
+                preferFreeFormats: true,
+                youtubeSkipDashManifest: true,
+                addHeader: [
+                    'referer:youtube.com',
+                    'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                ]
+            });
             
-            // Add a user-agent to avoid IP blocks
-            const options = {
-                requestOptions: {
-                    headers: {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                    }
-                }
-            };
-            
-            // Get video info with options
-            const info = await ytdl.getInfo(url, options);
-            
-            console.log('Successfully retrieved info with ytdl-core');
+            console.log('Successfully retrieved info with youtube-dl-exec');
             
             return {
-                id: info.videoDetails.videoId,
-                title: info.videoDetails.title,
-                thumbnail: info.videoDetails.thumbnails[0].url,
-                duration: info.videoDetails.lengthSeconds,
-                author: info.videoDetails.author.name,
-                url: url // Use the possibly converted URL
+                id: result.id,
+                title: result.title,
+                thumbnail: result.thumbnail,
+                duration: result.duration,
+                author: result.uploader,
+                url: url,
+                formats: result.formats
             };
-        } catch (ytdlError) {
-            // If ytdl-core fails, try with youtube-dl-exec
-            console.log('ytdl-core failed, trying with youtube-dl-exec...');
-            console.log('ytdl-core error:', ytdlError.message);
+        } catch (youtubeDlError) {
+            console.log('youtube-dl-exec failed, falling back to basic extraction:', youtubeDlError.message);
             
+            // Extract video ID from URL
+            let videoId;
+            if (url.includes('watch?v=')) {
+                videoId = url.split('watch?v=')[1].split('&')[0];
+            } else if (url.includes('youtu.be/')) {
+                videoId = url.split('youtu.be/')[1].split('?')[0];
+            } else if (url.includes('/shorts/')) {
+                videoId = url.split('/shorts/')[1]?.split('?')[0];
+            } else {
+                throw new Error('Could not extract video ID from URL');
+            }
+            
+            // Use video ID to construct basic info
+            // Try to get the title from YouTube's oEmbed API
             try {
-                // Use youtube-dl-exec with minimal flags to get video info
-                const result = await youtubeDl(url, {
-                    dumpSingleJson: true,
-                    noWarnings: true,
-                    preferFreeFormats: true,
-                    noCheckCertificates: true,
-                    youtubeSkipDashManifest: true,
-                });
-                
-                console.log('Successfully retrieved info with youtube-dl-exec');
+                const oembedUrl = `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`;
+                const response = await axios.get(oembedUrl);
+                const title = response.data.title;
+                const author = response.data.author_name;
                 
                 return {
-                    id: result.id,
-                    title: result.title,
-                    thumbnail: result.thumbnail,
-                    duration: result.duration,
-                    author: result.uploader,
+                    id: videoId,
+                    title: title,
+                    thumbnail: `https://img.youtube.com/vi/${videoId}/0.jpg`,
+                    duration: '0', // Duration unknown
+                    author: author,
                     url: url,
-                    // Also store formats for later use in download
-                    formats: result.formats
+                    videoId: videoId
                 };
-            } catch (youtubeDlError) {
-                console.error('Both ytdl-core and youtube-dl-exec failed:', youtubeDlError.message);
+            } catch (oembedError) {
+                console.error('Failed to get video info from oembed:', oembedError.message);
                 
-                // If YouTube short and both methods failed, return basic info
-                if (isYouTubeShort) {
-                    console.log('Using basic info for YouTube Short');
-                    const videoId = url.includes('watch?v=') 
-                        ? url.split('watch?v=')[1].split('&')[0]
-                        : url.split('/shorts/')[1]?.split('?')[0];
-                    
-                    if (!videoId) {
-                        throw new Error('Could not extract video ID from URL');
-                    }
-                    
-                    // Return basic information for the short
-                    return {
-                        id: videoId,
-                        title: `YouTube Short (${videoId})`,
-                        thumbnail: `https://img.youtube.com/vi/${videoId}/0.jpg`,
-                        duration: '0', // Duration unknown
-                        author: 'YouTube Creator',
-                        url: url,
-                        isShort: true
-                    };
-                }
-                
-                // For regular videos, throw a combined error
-                throw new Error(`YouTube extraction failed: ${youtubeDlError.message}`);
+                // Return basic info based on video ID
+                return {
+                    id: videoId,
+                    title: `YouTube Video (${videoId})`,
+                    thumbnail: `https://img.youtube.com/vi/${videoId}/0.jpg`,
+                    duration: '0', // Duration unknown
+                    author: 'YouTube Creator',
+                    url: url,
+                    videoId: videoId
+                };
             }
         }
     } catch (error) {
