@@ -24,8 +24,11 @@ document.addEventListener('DOMContentLoaded', () => {
     let currentAudioFilename = '';
     let currentMediaData = null;
     
-    // API base URL - configured for local development with frontend on port 5500 and backend on port 7777
-    const API_BASE_URL = 'http://localhost:7777/api';
+    // API base URL - dynamically determine if we're in production or development
+    const isProduction = window.location.hostname !== 'localhost' && !window.location.hostname.includes('127.0.0.1');
+    const API_BASE_URL = isProduction ? '/api' : 'http://localhost:7777/api';
+    
+    console.log('Using API base URL:', API_BASE_URL);
 
     // Clipboard functionality
     clipboardBtn.addEventListener('click', async () => {

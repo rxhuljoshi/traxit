@@ -23,7 +23,7 @@ const PORT = process.env.PORT || 7777;
 
 // Middleware
 app.use(cors({
-    origin: ['http://localhost:5500', 'http://127.0.0.1:5500', process.env.FRONTEND_URL].filter(Boolean),
+    origin: ['http://localhost:5500', 'http://127.0.0.1:5500', process.env.FRONTEND_URL, 'https://reel-2c4k5kyzy-rjdeep0301-gmailcoms-projects.vercel.app'].filter(Boolean),
     methods: ['GET', 'POST'],
     credentials: true
 }));
@@ -36,6 +36,11 @@ const TEMP_DIR = process.env.NODE_ENV === 'production' ? '/tmp' : path.join(__di
 if (!fs.existsSync(TEMP_DIR)) {
     fs.mkdirSync(TEMP_DIR);
 }
+
+// Add a route handler for the root path
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'index.html'));
+});
 
 /**
  * Main API endpoint to analyze a URL
