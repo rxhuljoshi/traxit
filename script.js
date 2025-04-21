@@ -26,8 +26,11 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // API base URL - dynamically determine if we're in production or development
     const isProduction = window.location.hostname !== 'localhost' && !window.location.hostname.includes('127.0.0.1');
-    const API_BASE_URL = isProduction ? '/api' : 'http://localhost:7777/api';
+    let API_BASE_URL = isProduction ? '/api' : 'http://localhost:7777/api';
     
+    // Debug API URL
+    console.log('Environment:', isProduction ? 'Production' : 'Development');
+    console.log('Hostname:', window.location.hostname);
     console.log('Using API base URL:', API_BASE_URL);
 
     // Clipboard functionality
@@ -65,18 +68,33 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Function to get proper URL object with params for audio download
     function getAudioDownloadUrl(videoInfo) {
-        // Create a URL object for audio downloads
-        const apiUrl = new URL(`${API_BASE_URL}/download/audio`);
+        // For production, make sure we have a proper absolute URL
+        let baseUrl;
+        if (isProduction) {
+            // Use the current origin (protocol + hostname)
+            baseUrl = `${window.location.origin}${API_BASE_URL}/download/audio`;
+        } else {
+            baseUrl = `${API_BASE_URL}/download/audio`;
+        }
         
-        // Add parameters
-        apiUrl.searchParams.append('url', videoInfo.url);
-        apiUrl.searchParams.append('platform', videoInfo.platform);
-        apiUrl.searchParams.append('title', videoInfo.title || 'audio');
-        
-        // Log the URL for debugging
-        console.log(`Generated audio download URL:`, apiUrl.toString());
-        
-        return apiUrl.toString();
+        try {
+            // Create a URL object for audio downloads
+            const apiUrl = new URL(baseUrl);
+            
+            // Add parameters
+            apiUrl.searchParams.append('url', videoInfo.url);
+            apiUrl.searchParams.append('platform', videoInfo.platform);
+            apiUrl.searchParams.append('title', videoInfo.title || 'audio');
+            
+            // Log the URL for debugging
+            console.log(`Generated audio download URL:`, apiUrl.toString());
+            
+            return apiUrl.toString();
+        } catch (error) {
+            console.error('Error creating URL:', error);
+            showNotification('Error generating download URL. Please try again.', 'error');
+            throw error;
+        }
     }
 
     // Process URL using the server API
@@ -87,9 +105,19 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
 
+            // Get the proper API URL for the process endpoint
+            let processUrl;
+            if (isProduction) {
+                processUrl = `${window.location.origin}${API_BASE_URL}/process`;
+            } else {
+                processUrl = `${API_BASE_URL}/process`;
+            }
+            
             // Call server API to process URL
             console.log(`Calling API to process URL: ${url}`);
-            fetch(`${API_BASE_URL}/process`, {
+            console.log(`Process API endpoint: ${processUrl}`);
+            
+            fetch(processUrl, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -138,6 +166,8 @@ document.addEventListener('DOMContentLoaded', () => {
         fallbackDownload.style.display = 'block';
         manualDownloadLink.setAttribute('href', url);
         manualDownloadLink.setAttribute('download', filename);
+        
+        console.log('Starting audio download with URL:', url);
         
         // Use fetch to trigger the download rather than navigation
         fetch(url)
@@ -258,6 +288,8 @@ document.addEventListener('DOMContentLoaded', () => {
         // Get the URL and filename
         const url = manualDownloadLink.getAttribute('href');
         const filename = manualDownloadLink.getAttribute('download');
+        
+        console.log('Manual download clicked with URL:', url);
         
         // Use the same fetch approach as the main download function
         fetch(url)
