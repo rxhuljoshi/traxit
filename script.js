@@ -28,16 +28,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const isProduction = window.location.hostname !== 'localhost' && !window.location.hostname.includes('127.0.0.1');
     let API_BASE_URL = isProduction ? '/api' : 'http://localhost:7777/api';
     
-    // Railway API for audio downloads
-    const RAILWAY_API = isProduction 
-        ? 'https://traxit-production.up.railway.app/download' 
-        : 'http://localhost:3000/download';
-    
     // Debug API URL
     console.log('Environment:', isProduction ? 'Production' : 'Development');
     console.log('Hostname:', window.location.hostname);
     console.log('Using API base URL:', API_BASE_URL);
-    console.log('Using Railway API for downloads:', RAILWAY_API);
 
     // Clipboard functionality
     clipboardBtn.addEventListener('click', async () => {
@@ -63,11 +57,26 @@ document.addEventListener('DOMContentLoaded', () => {
         
         // Check if it's a reasonable URL format
         try {
-            new URL(url);
+            const urlObj = new URL(url);
             
-            // Check if it's likely a YouTube URL
-            return url.includes('youtube.com') || url.includes('youtu.be');
+            // Check if it's any YouTube URL format
+            const hostname = urlObj.hostname.toLowerCase();
+            return (
+                hostname === 'youtube.com' || 
+                hostname === 'www.youtube.com' || 
+                hostname === 'youtu.be' || 
+                hostname === 'm.youtube.com' ||
+                hostname.endsWith('.youtube.com')
+            );
         } catch (e) {
+            // If URL parsing fails, let's try to fix common issues
+            if (url.includes('youtube.com') || url.includes('youtu.be')) {
+                // It might be a YouTube URL without proper scheme
+                if (!url.startsWith('http://') && !url.startsWith('https://')) {
+                    // Try prepending https:// and validating again
+                    return isValidUrl('https://' + url);
+                }
+            }
             return false;
         }
     }
@@ -75,8 +84,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // Function to get proper URL object with params for audio download
     function getAudioDownloadUrl(videoInfo) {
         try {
-            // Use Railway API for downloads (handles YouTube better than Vercel)
-            const apiUrl = new URL(RAILWAY_API);
+            // Use API for downloads
+            const apiUrl = new URL(`${API_BASE_URL}/download/audio`);
             
             // Add parameters
             apiUrl.searchParams.append('url', videoInfo.url);
@@ -265,8 +274,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 // Hide loader
                 loader.style.display = 'none';
                 
-                // Show error
-                errorText.textContent = error.message;
+                // Show error with additional help for YouTube URLs
+                let errorMsg = error.message;
+                if (errorMsg.includes('Invalid YouTube URL')) {
+                    errorMsg = 'Invalid YouTube URL. Please enter a complete URL like "https://www.youtube.com/watch?v=VIDEOID" or "https://youtu.be/VIDEOID"';
+                }
+                errorText.textContent = errorMsg;
                 errorMessage.classList.add('show');
             });
     });
