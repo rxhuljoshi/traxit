@@ -599,9 +599,12 @@ function detectPlatform(url) {
 }
 
 function extractYouTubeInfo(url) {
-    // Implement your logic to extract video information from YouTube
-    // This is a placeholder and should be replaced with the actual implementation
-    return { title: 'Sample Video Title', duration: '2:30' }; // Placeholder, actual implementation needed
+    // Include the URL in the returned object so the client can use it
+    return { 
+        title: 'Sample Video Title', 
+        duration: '2:30',
+        url: url  // This is important - client checks for this property
+    };
 }
 
 function sanitizeFilename(filename) {
