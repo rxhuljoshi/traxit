@@ -84,12 +84,26 @@ document.addEventListener('DOMContentLoaded', () => {
     // Function to get proper URL object with params for audio download
     function getAudioDownloadUrl(videoInfo) {
         try {
-            // Use API for downloads
-            const apiUrl = new URL(`${API_BASE_URL}/download/audio`);
+            let baseUrl;
+            
+            // Make sure we have the correct base URL for both environments
+            if (isProduction) {
+                // In production (Vercel), use the current origin + API path
+                baseUrl = `${window.location.origin}${API_BASE_URL}/download/audio`;
+            } else {
+                // In development, use the full API URL
+                baseUrl = `${API_BASE_URL}/download/audio`;
+            }
+            
+            console.log('Base download URL:', baseUrl);
+            
+            // Create the URL object
+            const apiUrl = new URL(baseUrl);
             
             // Add parameters
             apiUrl.searchParams.append('url', videoInfo.url);
             apiUrl.searchParams.append('title', videoInfo.title || 'audio');
+            apiUrl.searchParams.append('platform', videoInfo.platform || 'youtube');
             
             // Log the URL for debugging
             console.log(`Generated audio download URL:`, apiUrl.toString());
@@ -97,6 +111,7 @@ document.addEventListener('DOMContentLoaded', () => {
             return apiUrl.toString();
         } catch (error) {
             console.error('Error creating URL:', error);
+            console.error('Video info:', JSON.stringify(videoInfo, null, 2));
             showNotification('Error generating download URL. Please try again.', 'error');
             throw error;
         }
@@ -144,6 +159,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 
                 console.log('API returned data:', data);
                 
+                // Validate that we have the required data
+                if (!data.videoInfo || !data.videoInfo.url) {
+                    console.error('Invalid video info returned from API:', data);
+                    throw new Error('Invalid video data returned from server');
+                }
+                
                 // Store video information
                 currentMediaData = data.videoInfo;
                 currentMediaData.platform = data.platform;
@@ -165,6 +186,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Start download for audio
     function initiateAudioDownload(url, filename) {
+        // Validate parameters
+        if (!url) {
+            showNotification('Download URL is missing. Please try again.', 'error');
+            return;
+        }
+        
         showNotification(`Starting audio download. This may take a few moments...`, 'info');
         
         // Show fallback option right away
@@ -179,7 +206,7 @@ document.addEventListener('DOMContentLoaded', () => {
             .then(response => {
                 if (!response.ok) {
                     return response.json().then(data => {
-                        throw new Error(data.message || `Server returned ${response.status}: ${response.statusText}`);
+                        throw new Error(data.message || data.error || `Server returned ${response.status}: ${response.statusText}`);
                     }).catch(e => {
                         // If the response is not JSON, or has no message
                         throw new Error(`Server returned ${response.status}: ${response.statusText}`);
@@ -218,7 +245,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 } else if (error.message.includes('503') || error.message.includes('temporarily unavailable')) {
                     showNotification(`YouTube Shorts downloads are temporarily unavailable due to YouTube API changes. Please try a regular YouTube video instead.`, 'warning');
                 } else if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
-                    showNotification(`Could not connect to download server. The Railway server might be starting up or sleeping. Try again in a few seconds.`, 'warning');
+                    showNotification(`Connection error. Please check your internet connection and try again.`, 'warning');
                 } else {
                     showNotification(`Download error: ${error.message}. Please try again later.`, 'error');
                 }
