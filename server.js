@@ -598,13 +598,56 @@ function detectPlatform(url) {
     return 'youtube'; // Placeholder, actual implementation needed
 }
 
-function extractYouTubeInfo(url) {
-    // Include the URL in the returned object so the client can use it
-    return { 
-        title: 'Sample Video Title', 
-        duration: '2:30',
-        url: url  // This is important - client checks for this property
-    };
+async function extractYouTubeInfo(url) {
+    try {
+        console.log(`Extracting info for YouTube URL: ${url}`);
+        
+        // Validate YouTube URL format
+        if (!url.includes('youtube.com') && !url.includes('youtu.be')) {
+            throw new Error('Invalid YouTube URL format');
+        }
+        
+        // Use ytdl to get video info
+        const ytdlOptions = {
+            requestOptions: {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                }
+            }
+        };
+        
+        // Get video info from ytdl
+        try {
+            const info = await ytdl.getInfo(url, ytdlOptions);
+            console.log(`YouTube info retrieved successfully for: ${info.videoDetails.title}`);
+            
+            return {
+                title: info.videoDetails.title,
+                duration: info.videoDetails.lengthSeconds,
+                url: url,
+                thumbnail: info.videoDetails.thumbnails[0]?.url || '',
+                author: info.videoDetails.author.name,
+                videoId: info.videoDetails.videoId
+            };
+        } catch (ytdlError) {
+            console.error('Error extracting YouTube info with ytdl:', ytdlError.message);
+            
+            // Fallback to basic info
+            return {
+                title: 'YouTube Video',
+                duration: '0:00',
+                url: url
+            };
+        }
+    } catch (error) {
+        console.error('Error in extractYouTubeInfo:', error.message);
+        // Return minimal valid object to prevent client errors
+        return {
+            title: 'YouTube Video',
+            duration: '0:00',
+            url: url
+        };
+    }
 }
 
 function sanitizeFilename(filename) {
