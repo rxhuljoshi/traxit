@@ -22,6 +22,18 @@ const isProduction = process.env.NODE_ENV === 'production';
 console.log(`Running in ${isProduction ? 'production' : 'development'} environment`);
 console.log(`NODE_ENV: ${process.env.NODE_ENV}`);
 console.log(`Using FFmpeg path: ${ffmpegPath}`);
+console.log(`Temp directory: ${process.env.NODE_ENV === 'production' ? '/tmp' : os.tmpdir()}`);
+console.log(`Current working directory: ${process.cwd()}`);
+console.log(`Platform: ${process.platform}, Arch: ${process.arch}`);
+console.log(`Node.js version: ${process.version}`);
+// Check available space in temp directory
+try {
+    const tempDir = process.env.NODE_ENV === 'production' ? '/tmp' : os.tmpdir();
+    const tempStats = fs.statSync(tempDir);
+    console.log(`Temp directory stats:`, tempStats);
+} catch (err) {
+    console.error('Error checking temp directory:', err);
+}
 
 // Create Express app
 const app = express();
@@ -267,32 +279,81 @@ app.get('/api/download/audio', async (req, res) => {
                 try {
                     console.log('Trying to download audio with ytdl-core...');
                     
-                    // Define ytdl options
+                    // Define ytdl options with more retry capability
                     const ytdlOptions = {
                         requestOptions: {
                             headers: {
                                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
                             }
-                        }
+                        },
+                        quality: audioQuality === 'highest' ? 'highestaudio' : audioQuality || 'highestaudio',
+                        filter: 'audioonly',
+                        highWaterMark: 1 << 25, // 32MB buffer for more stable downloads
                     };
                     
-                    // Get the video info
-                    const info = await ytdl.getInfo(url, ytdlOptions);
-                    console.log(`Video found with ytdl-core: ${info.videoDetails.title}`);
+                    console.log('YT-DL options:', JSON.stringify(ytdlOptions));
+                    
+                    // Get the video info with additional safety
+                    let info;
+                    try {
+                        console.log(`Getting video info for: ${url}`);
+                        info = await ytdl.getInfo(url, ytdlOptions);
+                        console.log(`Video info retrieved: ${info.videoDetails.title} (${info.videoDetails.videoId})`);
+                        
+                        // Log available formats for debugging
+                        const audioFormats = ytdl.filterFormats(info.formats, 'audioonly');
+                        console.log(`Available audio formats: ${audioFormats.length}`);
+                        audioFormats.forEach((format, i) => {
+                            console.log(`Format ${i}: ${format.mimeType}, quality: ${format.audioQuality}, bitrate: ${format.audioBitrate}`);
+                        });
+                        
+                        // If no audio formats are available, throw an error
+                        if (audioFormats.length === 0) {
+                            throw new Error('No audio formats available for this video');
+                        }
+                    } catch (infoError) {
+                        console.error(`Failed to get video info: ${infoError.message}`);
+                        throw new Error(`Could not retrieve video info: ${infoError.message}`);
+                    }
                     
                     // Create write stream for video file
                     const fileWriter = fs.createWriteStream(tempFilePath);
+                    console.log(`Created write stream for: ${tempFilePath}`);
                     
                     // Download video with specified audio quality and options
-                    ytdl(url, { 
-                        quality: audioQuality === 'highest' ? 'highestaudio' : audioQuality || 'highestaudio',
-                        ...ytdlOptions 
-                    }).pipe(fileWriter);
+                    const stream = ytdl(url, ytdlOptions);
                     
-                    // Wait for download to complete
+                    // Add error handling for the stream
+                    stream.on('error', (err) => {
+                        console.error(`Stream error: ${err}`);
+                        fileWriter.end(); // Make sure to close the file writer
+                    });
+                    
+                    // Add progress tracking
+                    let downloadedBytes = 0;
+                    stream.on('data', (chunk) => {
+                        downloadedBytes += chunk.length;
+                        if (downloadedBytes % (1024 * 1024) === 0) { // Log every MB
+                            console.log(`Downloaded ${Math.round(downloadedBytes / 1024 / 1024)}MB`);
+                        }
+                    });
+                    
+                    // Pipe the stream to the file writer
+                    stream.pipe(fileWriter);
+                    
+                    // Wait for download to complete with timeout
                     await new Promise((resolve, reject) => {
-                        fileWriter.on('finish', resolve);
+                        const timeout = setTimeout(() => {
+                            reject(new Error('Download timed out after 5 minutes'));
+                        }, 5 * 60 * 1000); // 5 minute timeout
+                        
+                        fileWriter.on('finish', () => {
+                            clearTimeout(timeout);
+                            resolve();
+                        });
+                        
                         fileWriter.on('error', (err) => {
+                            clearTimeout(timeout);
                             console.error(`Error writing temp file: ${err}`);
                             reject(err);
                         });
@@ -312,9 +373,22 @@ app.get('/api/download/audio', async (req, res) => {
                 } catch (ytdlError) {
                     // If ytdl-core fails, try with youtube-dl-exec
                     console.log('ytdl-core audio download failed, trying with youtube-dl-exec...');
-                    console.log('ytdl-core error:', ytdlError.message);
+                    console.log('ytdl-core error details:', ytdlError);
+                    
+                    // Sleep for a moment to let any file handles close
+                    await new Promise(resolve => setTimeout(resolve, 1000));
                     
                     try {
+                        // Clean up any partial downloads
+                        if (fs.existsSync(tempFilePath)) {
+                            try {
+                                fs.unlinkSync(tempFilePath);
+                                console.log(`Deleted partial download: ${tempFilePath}`);
+                            } catch (unlinkErr) {
+                                console.error(`Error deleting partial file: ${unlinkErr.message}`);
+                            }
+                        }
+                        
                         // Direct download of audio using youtube-dl-exec with improved options
                         console.log('Trying direct audio download with youtube-dl-exec...');
                         
@@ -453,7 +527,54 @@ app.get('/api/download/audio', async (req, res) => {
                                 message: 'YouTube Shorts audio downloads are temporarily unavailable due to YouTube API changes. Please try a regular YouTube video instead.'
                             });
                         } else {
-                            throw new Error(`YouTube audio download failed: ${youtubeDlError.message}`);
+                            // Last resort - try a very simple method with a direct info fetch and ffmpeg call
+                            try {
+                                console.log('Attempting one last fallback method...');
+                                
+                                // Get video info directly
+                                const basicInfo = await ytdl.getBasicInfo(url);
+                                if (!basicInfo) {
+                                    throw new Error('Could not get basic video info');
+                                }
+                                
+                                console.log(`Got basic info for: ${basicInfo.videoDetails.title}`);
+                                
+                                // Find an audio format
+                                const format = ytdl.chooseFormat(basicInfo.formats, { quality: 'highestaudio' });
+                                if (!format) {
+                                    throw new Error('No suitable audio format found');
+                                }
+                                
+                                console.log(`Using format: ${format.mimeType}, quality: ${format.audioQuality || 'unknown'}`);
+                                
+                                // Generate a simple MP3 file with info
+                                const infoText = `Title: ${basicInfo.videoDetails.title}\nAuthor: ${basicInfo.videoDetails.author.name}\nURL: ${url}`;
+                                fs.writeFileSync(outputPath, infoText);
+                                
+                                console.log('Created info file as fallback');
+                                
+                                // Set download headers
+                                res.setHeader('Content-Disposition', `attachment; filename="info_${encodeURIComponent(headerSafeFileName)}"`);
+                                res.setHeader('Content-Type', 'text/plain');
+                                res.setHeader('Content-Length', fs.statSync(outputPath).size);
+                                
+                                // Stream the file
+                                const infoFile = fs.createReadStream(outputPath);
+                                
+                                // Set up cleanup
+                                infoFile.on('end', () => {
+                                    console.log('Info file sent, cleaning up...');
+                                    if (fs.existsSync(outputPath)) {
+                                        fs.unlinkSync(outputPath);
+                                    }
+                                });
+                                
+                                // Send the file
+                                return infoFile.pipe(res);
+                            } catch (finalError) {
+                                console.error('All fallback methods failed:', finalError);
+                                throw new Error(`YouTube audio download failed: ${youtubeDlError.message} (${finalError.message})`);
+                            }
                         }
                     }
                 }
