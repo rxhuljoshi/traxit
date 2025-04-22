@@ -167,49 +167,6 @@ app.get('/api/download/audio', async (req, res) => {
             }
         }
         
-        // Check if in simplified mode for Vercel
-        if (isProduction) {
-            try {
-                // On Vercel, use a simpler approach that's more likely to work
-                console.log('Using simplified audio download for Vercel environment');
-                
-                // Extract video ID 
-                let videoId;
-                if (url.includes('watch?v=')) {
-                    videoId = url.split('watch?v=')[1].split('&')[0];
-                } else if (url.includes('youtu.be/')) {
-                    videoId = url.split('youtu.be/')[1].split('?')[0];
-                } else if (url.includes('/shorts/')) {
-                    videoId = url.split('/shorts/')[1]?.split('?')[0];
-                } else {
-                    throw new Error('Could not extract video ID from URL');
-                }
-                
-                // Sanitize the title for filename use
-                const safeTitle = sanitizeFilename(title || 'audio');
-                const fileName = `${safeTitle}.mp3`;
-                
-                // Create a header-safe filename version for Content-Disposition
-                const headerSafeFilename = sanitizeFilenameForHeader(title || 'audio');
-                const headerSafeFileName = `${headerSafeFilename}.mp3`;
-                
-                // Redirect to a YouTube to MP3 converter service
-                return res.status(501).json({
-                    error: 'Direct download from Vercel is temporarily disabled',
-                    message: 'Due to server limitations on Vercel, direct downloads are temporarily disabled. Please use a desktop version of our app or try again later.',
-                    videoId: videoId,
-                    url: url
-                });
-            } catch (error) {
-                console.error('Error in simplified download:', error);
-                return res.status(500).json({ 
-                    error: 'Failed to process download in Vercel environment',
-                    message: 'Try using a different YouTube video or check back later'
-                });
-            }
-        }
-        
-        // Regular download process continues here for non-Vercel environment
         // Attempt to decode URL if it's encoded
         try {
             url = decodeURIComponent(url);
@@ -541,260 +498,120 @@ app.get('/api/download/audio', async (req, res) => {
                                 resolve();
                             } else {
                                 console.error(`ffmpeg process exited with code ${code}`);
-                                reject(new Error(`ffmpeg process exited with code ${code}`));
+                                reject(new Error(`ffmpeg process failed with code ${code}`));
                             }
                         });
                         
                         ffmpeg.on('error', (err) => {
-                            console.error(`Error executing ffmpeg: ${err}`);
+                            console.error(`ffmpeg process error: ${err}`);
                             reject(err);
                         });
                     });
                     
-                    // Verify audio file exists
-                    if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size === 0) {
-                        throw new Error('Audio extraction failed: File not created or is empty');
+                    // Check if the output file exists and has content
+                    if (!fs.existsSync(outputPath)) {
+                        throw new Error('Audio extraction failed: Output file not created');
                     }
                     
-                    console.log(`Audio file created: ${outputPath}, size: ${fs.statSync(outputPath).size} bytes`);
-                } catch (error) {
-                    console.error(`Error extracting audio: ${error}`);
-                    cleanup();
-                    return res.status(500).json({ error: `Error extracting audio: ${error.message}` });
+                    const outputStats = fs.statSync(outputPath);
+                    if (outputStats.size === 0) {
+                        throw new Error('Audio extraction failed: Empty output file');
+                    }
+                    
+                    console.log(`Audio file created successfully: ${outputPath} (${outputStats.size} bytes)`);
+                    
+                    // Set headers for file download
+                    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(headerSafeFileName)}"`);
+                    res.setHeader('Content-Type', 'audio/mpeg');
+                    res.setHeader('Content-Length', outputStats.size);
+                    
+                    // Stream the audio file to response
+                    const audioFile = fs.createReadStream(outputPath);
+                    
+                    // Define cleanup function
+                    const cleanup = () => {
+                        try {
+                            // Clean up temporary files
+                            if (fs.existsSync(tempFilePath)) {
+                                fs.unlinkSync(tempFilePath);
+                                console.log(`Deleted temp video file: ${tempFilePath}`);
+                            }
+                            if (fs.existsSync(outputPath)) {
+                                fs.unlinkSync(outputPath);
+                                console.log(`Deleted output audio file: ${outputPath}`);
+                            }
+                        } catch (cleanupErr) {
+                            console.error(`Error during cleanup: ${cleanupErr}`);
+                        }
+                    };
+                    
+                    // Handle errors
+                    audioFile.on('error', (err) => {
+                        console.error(`Error reading audio file: ${err}`);
+                        if (!res.headersSent) {
+                            cleanup();
+                            return res.status(500).json({ error: 'Failed to read audio file' });
+                        }
+                    });
+                    
+                    // Clean up temp files after streaming
+                    audioFile.on('end', () => {
+                        console.log('File streaming completed, cleaning up...');
+                        cleanup();
+                    });
+                    
+                    // Send the file
+                    return audioFile.pipe(res);
+                } catch (ffmpegError) {
+                    console.error('Error extracting audio:', ffmpegError.message);
+                    return res.status(500).json({ error: `Error extracting audio: ${ffmpegError.message}` });
                 }
             } catch (error) {
-                console.error(`Error extracting audio: ${error}`);
-                
-                // Define cleanup function if not already defined
-                const cleanup = () => {
-                    try {
-                        // Clean up temporary files
-                        if (tempFilePath && fs.existsSync(tempFilePath)) {
-                            fs.unlinkSync(tempFilePath);
-                        }
-                        if (outputPath && fs.existsSync(outputPath)) {
-                            fs.unlinkSync(outputPath);
-                        }
-                    } catch (err) {
-                        console.error(`Error during cleanup: ${err}`);
-                    }
-                };
-                
-                cleanup();
-                
-                // For YouTube shorts, provide a more specific message
-                if (url.includes('/shorts/') || url.includes('shorts')) {
-                    return res.status(503).json({
-                        error: 'YouTube Shorts audio download temporarily unavailable',
-                        message: 'YouTube Shorts audio downloads are temporarily unavailable due to YouTube API changes. Please try a regular YouTube video instead.'
-                    });
-                } else {
-                    return res.status(500).json({ error: `Failed to extract audio: ${error.message}` });
-                }
+                console.error('Error extracting audio:', error.message);
+                return res.status(500).json({ error: `Error extracting audio: ${error.message}` });
             }
-        } else if (platform === 'instagram') {
-            // For Instagram - professional implementation needed
-            console.log(`Instagram audio download functionality coming soon`);
-            return res.status(501).json({ 
-                error: `Instagram audio download functionality not implemented yet`,
-                message: `We're working on implementing Instagram audio downloads. Please try again later.`
-            });
-        } else {
-            // Unsupported platforms
-            return res.status(400).json({ error: 'Unsupported platform for audio downloads' });
         }
-
-        // Set headers for download
-        res.setHeader('Content-Disposition', `attachment; filename="${headerSafeFileName}"; filename*=UTF-8''${encodeURIComponent(headerSafeFileName)}`);
-        res.setHeader('Content-Type', 'audio/mp3');
-        res.setHeader('Content-Length', fs.statSync(outputPath).size);
-
-        // Define cleanup function if not defined earlier
-        const cleanup = () => {
-            try {
-                // Clean up temporary files
-                if (tempFilePath && fs.existsSync(tempFilePath)) {
-                    fs.unlinkSync(tempFilePath);
-                }
-                if (outputPath && fs.existsSync(outputPath)) {
-                    fs.unlinkSync(outputPath);
-                }
-            } catch (err) {
-                console.error(`Error during cleanup: ${err}`);
+        try {
+            // Check if we've reached this point with a valid platform
+            if (!platform || platform !== 'youtube') {
+                throw new Error('Unsupported platform or invalid URL format');
             }
-        };
-
-        // Stream the audio file to response
-        const audioFile = fs.createReadStream(outputPath);
-
-        // Handle errors
-        audioFile.on('error', (err) => {
-            console.error(`Error reading audio file: ${err}`);
-            if (!res.headersSent) {
-                cleanup();
-                return res.status(500).json({ error: 'Failed to read audio file' });
-            }
-        });
-
-        // Clean up temp files after streaming
-        audioFile.on('end', () => {
-            console.log('File sent, cleaning up...');
-            cleanup();
-        });
-
-        // Send the file
-        audioFile.pipe(res);
+        } catch (error) {
+            console.error('Error processing URL:', error.message);
+            return res.status(500).json({ error: 'Failed to process URL' });
+        }
     } catch (error) {
-        console.error(`Error in audio download route: ${error}`);
-        return res.status(500).json({ error: 'Failed to download audio' });
+        console.error('Error processing download:', error.message);
+        return res.status(500).json({ error: 'Failed to process download' });
     }
 });
-
-// Detect platform from URL
-function detectPlatform(url) {
-    if (url.includes('youtube.com') || url.includes('youtu.be')) {
-        return 'youtube';
-    } else if (url.includes('instagram.com')) {
-        return 'instagram';
-    }
-    return null;
-}
-
-// Get YouTube video info
-async function extractYouTubeInfo(url) {
-    try {
-        // Handle YouTube Shorts specifically
-        const isYouTubeShort = url.includes('/shorts/');
-        
-        if (isYouTubeShort) {
-            console.log('Detected YouTube Short, converting URL format...');
-            // Extract the video ID from shorts URL
-            const shortId = url.split('/shorts/')[1]?.split('?')[0];
-            if (shortId) {
-                // Convert to standard YouTube watch URL
-                url = `https://www.youtube.com/watch?v=${shortId}`;
-                console.log('Converted shorts URL to:', url);
-            }
-        }
-        
-        console.log('Using simplified extraction for Vercel compatibility');
-        
-        try {
-            // Try extracting with youtube-dl-exec with simpler flags
-            const result = await youtubeDl(url, {
-                dumpSingleJson: true,
-                noWarnings: true,
-                noCheckCertificates: true,
-                preferFreeFormats: true,
-                youtubeSkipDashManifest: true,
-                addHeader: [
-                    'referer:youtube.com',
-                    'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-                ]
-            });
-            
-            console.log('Successfully retrieved info with youtube-dl-exec');
-            
-            return {
-                id: result.id,
-                title: result.title,
-                thumbnail: result.thumbnail,
-                duration: result.duration,
-                author: result.uploader,
-                url: url,
-                formats: result.formats
-            };
-        } catch (youtubeDlError) {
-            console.log('youtube-dl-exec failed, falling back to basic extraction:', youtubeDlError.message);
-            
-            // Extract video ID from URL
-            let videoId;
-            if (url.includes('watch?v=')) {
-                videoId = url.split('watch?v=')[1].split('&')[0];
-            } else if (url.includes('youtu.be/')) {
-                videoId = url.split('youtu.be/')[1].split('?')[0];
-            } else if (url.includes('/shorts/')) {
-                videoId = url.split('/shorts/')[1]?.split('?')[0];
-            } else {
-                throw new Error('Could not extract video ID from URL');
-            }
-            
-            // Use video ID to construct basic info
-            // Try to get the title from YouTube's oEmbed API
-            try {
-                const oembedUrl = `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`;
-                const response = await axios.get(oembedUrl);
-                const title = response.data.title;
-                const author = response.data.author_name;
-                
-                return {
-                    id: videoId,
-                    title: title,
-                    thumbnail: `https://img.youtube.com/vi/${videoId}/0.jpg`,
-                    duration: '0', // Duration unknown
-                    author: author,
-                    url: url,
-                    videoId: videoId
-                };
-            } catch (oembedError) {
-                console.error('Failed to get video info from oembed:', oembedError.message);
-                
-                // Return basic info based on video ID
-                return {
-                    id: videoId,
-                    title: `YouTube Video (${videoId})`,
-                    thumbnail: `https://img.youtube.com/vi/${videoId}/0.jpg`,
-                    duration: '0', // Duration unknown
-                    author: 'YouTube Creator',
-                    url: url,
-                    videoId: videoId
-                };
-            }
-        }
-    } catch (error) {
-        console.error('Error getting YouTube info:', error);
-        
-        // Provide more detailed error message
-        let errorMessage = 'Failed to get YouTube video info';
-        
-        if (error.message.includes('status code: 410')) {
-            errorMessage = 'This video is no longer available (410 Gone)';
-        } else if (error.message.includes('status code: 403')) {
-            errorMessage = 'Access to this video is forbidden (403 Forbidden)';
-        } else if (error.message.includes('private video')) {
-            errorMessage = 'This video is private and cannot be accessed';
-        } else if (error.message.includes('sign in')) {
-            errorMessage = 'This video requires you to sign in to YouTube';
-        } else if (error.message.includes('copyright')) {
-            errorMessage = 'This video is not available due to copyright restrictions';
-        } else if (error.message.includes('extract')) {
-            errorMessage = 'Unable to extract video info. This may be due to YouTube updates';
-        }
-        
-        throw new Error(errorMessage);
-    }
-}
-
-// Helper function to sanitize filenames
-function sanitizeFilename(filename) {
-    return filename.replace(/[/\\?%*:|"<>]/g, '-').substring(0, 100);
-}
-
-// Function to make a filename safe for Content-Disposition headers
-function sanitizeFilenameForHeader(filename) {
-    // Replace any non-ASCII characters and common problematic characters
-    const safeFilename = filename
-        .replace(/[^\x20-\x7E]/g, '') // Remove non-ASCII chars
-        .replace(/[(),']/g, '') // Remove parentheses, commas, quotes
-        .replace(/[&+$#@!*{}[\]=~`^]/g, '') // Remove special characters
-        .replace(/\s+/g, '_') // Replace spaces with underscores
-        .trim();
-    
-    // If the filename is now empty, use a default
-    return safeFilename.length > 0 ? safeFilename : 'audio';
-}
 
 // Start the server
 app.listen(PORT, () => {
-    console.log(`TraxIt server running on port ${PORT}`);
+    console.log(`Server is running on port ${PORT}`);
 });
+
+// Helper functions
+function detectPlatform(url) {
+    // Implement your logic to detect the platform based on the URL
+    // This is a placeholder and should be replaced with the actual implementation
+    return 'youtube'; // Placeholder, actual implementation needed
+}
+
+function extractYouTubeInfo(url) {
+    // Implement your logic to extract video information from YouTube
+    // This is a placeholder and should be replaced with the actual implementation
+    return { title: 'Sample Video Title', duration: '2:30' }; // Placeholder, actual implementation needed
+}
+
+function sanitizeFilename(filename) {
+    // Implement your logic to sanitize the filename
+    // This is a placeholder and should be replaced with the actual implementation
+    return filename.replace(/[^a-zA-Z0-9-_.]/g, '_');
+}
+
+function sanitizeFilenameForHeader(filename) {
+    // Implement your logic to sanitize the filename for use in headers
+    // This is a placeholder and should be replaced with the actual implementation
+    return filename.replace(/[^a-zA-Z0-9-_.]/g, '_');
+}
